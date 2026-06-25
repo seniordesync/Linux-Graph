@@ -55,7 +55,7 @@ impl eframe::App for LinuxGraphApp {
         frame.inner_margin = egui::Margin::same(15); // Красивые отступы
 
         egui::Panel::left("sidebar")
-            .exact_size(380.0)
+            .exact_size(460.0)
             .frame(frame)
             .show_inside(ui, |ui| {
                 // Кнопка центрирования в самом низу панели
@@ -235,7 +235,9 @@ impl eframe::App for LinuxGraphApp {
                         egui::ScrollArea::vertical()
                             .id_salt("deps")
                             .max_height(150.0)
+                            .auto_shrink([false, false])
                             .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
                                 for dep in &node.info.depends_on {
                                     if ui.link(dep).clicked()
                                         && let Some(&i) = graph._name_to_index.get(dep)
@@ -249,7 +251,9 @@ impl eframe::App for LinuxGraphApp {
                         egui::ScrollArea::vertical()
                             .id_salt("reqs")
                             .max_height(150.0)
+                            .auto_shrink([false, false])
                             .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
                                 for req in &node.info.required_by {
                                     if ui.link(req).clicked()
                                         && let Some(&i) = graph._name_to_index.get(req)
