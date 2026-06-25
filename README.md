@@ -37,11 +37,11 @@ Linux Graph supports these families:
 - Alpine Linux
 - NixOS
 
-Tested on:
-
-- Ubuntu
-- CachyOS
+Tested on real hardware:
 - Arch Linux
+
+Tested in Distrobox:
+- Debian
 - Fedora
 - Alpine Linux
 
