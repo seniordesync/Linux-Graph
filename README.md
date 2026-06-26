@@ -1,8 +1,8 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
-    <img alt="Linux Graph" src="assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark-transparent.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light-transparent.svg">
+    <img alt="Linux Graph" src="assets/logo-dark-transparent.svg">
   </picture>
 
   <p>
