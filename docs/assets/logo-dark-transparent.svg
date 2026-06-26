@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Linux Graph</title>
+  <desc id="desc">Dark theme header for the Linux Graph project.</desc>
+
+  <g stroke="#7ea7ff" stroke-opacity="0.45" stroke-width="3" fill="none">
+    <path d="M160 220 L290 160 L420 210 L565 120 L720 170 L865 105 L1020 160"/>
+    <path d="M290 160 L350 95"/>
+    <path d="M420 210 L470 255"/>
+    <path d="M565 120 L630 70"/>
+    <path d="M720 170 L770 235"/>
+    <path d="M865 105 L915 55"/>
+  </g>
+  <g>
+    <circle cx="160" cy="220" r="12" fill="#a8c7ff"/>
+    <circle cx="290" cy="160" r="16" fill="#79b8ff"/>
+    <circle cx="350" cy="95" r="9" fill="#e4eeff"/>
+    <circle cx="420" cy="210" r="13" fill="#79b8ff"/>
+    <circle cx="470" cy="255" r="8" fill="#e4eeff"/>
+    <circle cx="565" cy="120" r="18" fill="#79b8ff"/>
+    <circle cx="630" cy="70" r="9" fill="#e4eeff"/>
+    <circle cx="720" cy="170" r="14" fill="#79b8ff"/>
+    <circle cx="770" cy="235" r="8" fill="#e4eeff"/>
+    <circle cx="865" cy="105" r="16" fill="#79b8ff"/>
+    <circle cx="915" cy="55" r="9" fill="#e4eeff"/>
+    <circle cx="1020" cy="160" r="12" fill="#a8c7ff"/>
+  </g>
+  <text x="96" y="120" fill="#f4f7ff" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="0">
+    Linux Graph
+  </text>
+  <text x="98" y="170" fill="#9eb4d6" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" font-weight="400">
+    interactive package dependency map
+  </text>
+</svg>
