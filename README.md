@@ -6,10 +6,6 @@
   </picture>
 
   <p>
-    <strong>Interactive package dependency visualizer for Linux systems.</strong>
-  </p>
-
-  <p>
     <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust" />
     <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux" />
   </p>
