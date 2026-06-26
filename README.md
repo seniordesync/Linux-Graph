@@ -1,13 +1,25 @@
-# Linux Graph
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
+    <img alt="Linux Graph" src="assets/logo-dark.svg" width="120">
+  </picture>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
-  <img alt="Linux Graph" src="assets/logo-dark.svg">
-</picture>
+  <h1>Linux Graph</h1>
 
-Linux Graph is an interactive package dependency visualizer for Linux systems.
-It reads package metadata from the system package manager, includes Flatpak packages when available, and builds a dependency graph with search, suggestions, and package details.
+  <p>
+    <strong>Interactive package dependency visualizer for Linux systems.</strong>
+  </p>
+
+  <p>
+    <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust" />
+    <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux" />
+  </p>
+</div>
+
+<br>
+
+Linux Graph reads package metadata from the system package manager, includes Flatpak packages when available, and builds a dependency graph with search, suggestions, and package details.
 
 ## Features
 
@@ -38,6 +50,7 @@ Linux Graph supports these families:
 - NixOS
 
 Tested on real hardware:
+
 - Arch Linux
 
 Tested in Distrobox:
