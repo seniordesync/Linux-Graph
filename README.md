@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
-    <img alt="Linux Graph" src="assets/logo-dark.svg" width="120">
+    <img alt="Linux Graph" src="assets/logo-dark.svg">
   </picture>
 
   <h1>Linux Graph</h1>
