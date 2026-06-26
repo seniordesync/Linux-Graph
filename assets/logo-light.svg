@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
   <title id="title">Linux Graph</title>
   <desc id="desc">Light theme header for the Linux Graph project.</desc>
-  <rect width="1200" height="320" fill="#f7f9fc"/>
+
   <g stroke="#3c6df0" stroke-opacity="0.35" stroke-width="3" fill="none">
     <path d="M160 220 L290 160 L420 210 L565 120 L720 170 L865 105 L1020 160"/>
     <path d="M290 160 L350 95"/>

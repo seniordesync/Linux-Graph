@@ -5,8 +5,6 @@
     <img alt="Linux Graph" src="assets/logo-dark.svg">
   </picture>
 
-  <h1>Linux Graph</h1>
-
   <p>
     <strong>Interactive package dependency visualizer for Linux systems.</strong>
   </p>
