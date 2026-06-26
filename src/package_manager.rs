@@ -1,5 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, HashSet};
+use std::process::Output;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -86,6 +87,12 @@ pub async fn get_all_packages() -> Result<HashMap<String, PackageInfo>> {
         packages.extend(flatpaks);
     }
 
+    finalize_package_graph(&mut packages);
+
+    Ok(packages)
+}
+
+fn finalize_package_graph(packages: &mut HashMap<String, PackageInfo>) {
     // Оставляем только связи, которые реально резолвятся в текущем наборе пакетов.
     // Это убирает мусорные токены из парсеров и случайные shell-обрывки.
     let package_names: HashSet<String> = packages.keys().cloned().collect();
@@ -97,11 +104,12 @@ pub async fn get_all_packages() -> Result<HashMap<String, PackageInfo>> {
             .collect();
         info.depends_on.sort();
         info.depends_on.dedup();
+        info.required_by.clear();
     }
 
-    // Автоматическое вычисление reverse dependencies (Required By)
+    // Автоматическое вычисление reverse dependencies (Required By).
     let mut required_by_map: HashMap<String, Vec<String>> = HashMap::with_capacity(packages.len());
-    for (pkg_name, info) in &packages {
+    for (pkg_name, info) in packages.iter() {
         for dep in &info.depends_on {
             required_by_map
                 .entry(dep.clone())
@@ -110,13 +118,27 @@ pub async fn get_all_packages() -> Result<HashMap<String, PackageInfo>> {
         }
     }
 
-    for (pkg_name, info) in packages.iter_mut() {
-        if let Some(reqs) = required_by_map.remove(pkg_name) {
+    for (pkg_name, mut reqs) in required_by_map {
+        reqs.sort();
+        reqs.dedup();
+        if let Some(info) = packages.get_mut(&pkg_name) {
             info.required_by = reqs;
         }
     }
+}
 
-    Ok(packages)
+fn ensure_command_success(output: &Output, command: &str) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let details = stderr.trim();
+    if details.is_empty() {
+        bail!("{command} exited with {}", output.status);
+    }
+
+    bail!("{command} exited with {}: {details}", output.status);
 }
 
 // --------------------------------------------------------
@@ -144,6 +166,7 @@ async fn get_packages_pacman() -> Result<HashMap<String, PackageInfo>> {
         .output()
         .await
         .context("Failed to run pacman -Qi")?;
+    ensure_command_success(&output, "pacman -Qi")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut packages = HashMap::new();
@@ -199,12 +222,19 @@ async fn get_packages_dpkg() -> Result<HashMap<String, PackageInfo>> {
         .output()
         .await
         .context("Failed to run dpkg-query")?;
+    ensure_command_success(&output, "dpkg-query")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let packages = parse_dpkg_query_output(&stdout);
+
+    Ok(packages)
+}
+
+fn parse_dpkg_query_output(stdout: &str) -> HashMap<String, PackageInfo> {
     let mut packages = HashMap::new();
 
     for line in stdout.lines() {
-        let parts: Vec<&str> = line.split('|').collect();
+        let parts: Vec<&str> = line.splitn(5, '|').collect();
         if parts.len() < 5 {
             continue;
         }
@@ -216,20 +246,9 @@ async fn get_packages_dpkg() -> Result<HashMap<String, PackageInfo>> {
 
         let version = parts[1].to_string();
         let description = parts[2].to_string();
-        let size_kb = parts[3].parse::<f32>().unwrap_or(0.0);
+        let size_kb = parse_nonnegative_f32(parts[3]);
 
-        let depends_str = parts[4];
-        let mut depends_on = Vec::new();
-        for dep in depends_str.split(',') {
-            let dep = dep.trim();
-            if dep.is_empty() {
-                continue;
-            }
-            let dep_name = dep.split_whitespace().next().unwrap_or("").to_string();
-            if !dep_name.is_empty() {
-                depends_on.push(dep_name);
-            }
-        }
+        let depends_on = parse_dpkg_dependencies(parts[4]);
 
         packages.insert(
             name.clone(),
@@ -244,7 +263,7 @@ async fn get_packages_dpkg() -> Result<HashMap<String, PackageInfo>> {
             },
         );
     }
-    Ok(packages)
+    packages
 }
 
 // --------------------------------------------------------
@@ -259,12 +278,13 @@ async fn get_packages_rpm() -> Result<HashMap<String, PackageInfo>> {
         .output()
         .await
         .context("Failed to run rpm -qa")?;
+    ensure_command_success(&output, "rpm -qa")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut packages = HashMap::new();
 
     for line in stdout.lines() {
-        let parts: Vec<&str> = line.split('|').collect();
+        let parts: Vec<&str> = line.splitn(5, '|').collect();
         if parts.len() < 5 {
             continue;
         }
@@ -276,7 +296,7 @@ async fn get_packages_rpm() -> Result<HashMap<String, PackageInfo>> {
 
         let version = parts[1].to_string();
         let description = parts[2].to_string();
-        let size_bytes = parts[3].parse::<f32>().unwrap_or(0.0);
+        let size_bytes = parse_nonnegative_f32(parts[3]);
 
         let depends_str = parts[4];
         let mut depends_on = Vec::new();
@@ -363,12 +383,14 @@ async fn get_packages_apk() -> Result<HashMap<String, PackageInfo>> {
         } else if let Some(rest) = line.strip_prefix("T:") {
             current_pkg.description = rest.to_string();
         } else if let Some(rest) = line.strip_prefix("I:") {
-            current_pkg.size_kb = rest.parse::<f32>().unwrap_or(0.0) / 1024.0;
+            current_pkg.size_kb = parse_nonnegative_f32(rest) / 1024.0;
         } else if let Some(rest) = line.strip_prefix("D:") {
             for dep in rest.split_whitespace() {
                 let dep_name = dep.split(['=', '<', '>']).next().unwrap_or(dep);
-                if !dep_name.starts_with('!') {
-                    current_pkg.depends_on.push(dep_name.to_string());
+                if !dep_name.starts_with('!')
+                    && let Some(dep_name) = sanitize_dependency_name(dep_name)
+                {
+                    current_pkg.depends_on.push(dep_name);
                 }
             }
         }
@@ -411,7 +433,7 @@ async fn get_packages_portage() -> Result<HashMap<String, PackageInfo>> {
             let size_str = tokio::fs::read_to_string(pkg.path().join("SIZE"))
                 .await
                 .unwrap_or_default();
-            let size_bytes: f32 = size_str.trim().parse().unwrap_or(0.0);
+            let size_bytes = parse_nonnegative_f32(size_str.trim());
 
             let desc = tokio::fs::read_to_string(pkg.path().join("DESCRIPTION"))
                 .await
@@ -425,8 +447,10 @@ async fn get_packages_portage() -> Result<HashMap<String, PackageInfo>> {
                 let clean = dep.replace(&['<', '>', '=', '!', '~'][..], "");
                 let dep_name = clean.split(':').next().unwrap_or(&clean);
                 if !dep_name.is_empty() {
-                    let d = dep_name.rsplit('/').next().unwrap_or(dep_name);
-                    depends_on.push(d.to_string());
+                    let dep_name = dep_name.rsplit('/').next().unwrap_or(dep_name);
+                    if let Some(dep_name) = sanitize_dependency_name(dep_name) {
+                        depends_on.push(dep_name);
+                    }
                 }
             }
             depends_on.sort();
@@ -472,6 +496,7 @@ async fn get_packages_nix() -> Result<HashMap<String, PackageInfo>> {
         .output()
         .await
         .context("Failed to run nix-store")?;
+    ensure_command_success(&output, "nix-store -q --graph")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut packages = HashMap::new();
@@ -558,6 +583,10 @@ async fn get_packages_flatpak() -> Result<HashMap<String, PackageInfo>> {
         .await;
 
     if let Ok(output) = output {
+        if !output.status.success() {
+            return Ok(packages);
+        }
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
@@ -603,27 +632,68 @@ fn parse_flatpak_size(s: &str) -> f32 {
             unit_str.push(c);
         }
     }
-    let amount: f32 = num_str.parse().unwrap_or(0.0);
-    match unit_str.as_str() {
-        "GB" | "GiB" => amount * 1024.0 * 1024.0,
-        "MB" | "MiB" => amount * 1024.0,
-        "kB" | "KB" | "KiB" => amount,
-        "B" | "bytes" => amount / 1024.0,
+    let amount = parse_nonnegative_f32(&num_str);
+    if amount == 0.0 {
+        return 0.0;
+    }
+
+    let unit = unit_str.to_ascii_lowercase();
+    let size_kb = match unit.as_str() {
+        "gb" | "gib" => amount * 1024.0 * 1024.0,
+        "mb" | "mib" => amount * 1024.0,
+        "kb" | "kib" => amount,
+        "b" | "bytes" => amount / 1024.0,
         _ => 0.0,
+    };
+
+    if size_kb.is_finite() { size_kb } else { 0.0 }
+}
+
+fn parse_nonnegative_f32(s: &str) -> f32 {
+    let normalized = s.trim().replace(',', ".");
+    let amount = normalized.parse::<f32>().unwrap_or(0.0);
+    if amount.is_finite() && amount >= 0.0 {
+        amount
+    } else {
+        0.0
     }
 }
 
 // --------------------------------------------------------
 // Helper Utils
 // --------------------------------------------------------
-fn normalize_dependency_name(dep: &str, package_names: &HashSet<String>) -> Option<String> {
+fn sanitize_dependency_name(dep: &str) -> Option<String> {
     let dep = dep.trim();
     if dep.is_empty() {
         return None;
     }
 
-    if package_names.contains(dep) {
-        return Some(dep.to_string());
+    let dep = dep.split(">=").next().unwrap_or(dep);
+    let dep = dep.split("<=").next().unwrap_or(dep);
+    let dep = dep.split('=').next().unwrap_or(dep);
+    let dep = dep.split('>').next().unwrap_or(dep);
+    let dep = dep.split('<').next().unwrap_or(dep);
+    let dep = dep.trim();
+
+    if dep.is_empty()
+        || dep.starts_with('-')
+        || dep.starts_with('/')
+        || dep.starts_with('.')
+        || dep.chars().any(|c| {
+            !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '+' || c == ':')
+        })
+    {
+        return None;
+    }
+
+    Some(dep.to_string())
+}
+
+fn normalize_dependency_name(dep: &str, package_names: &HashSet<String>) -> Option<String> {
+    let dep = sanitize_dependency_name(dep)?;
+
+    if package_names.contains(&dep) {
+        return Some(dep);
     }
 
     if let Some((base, _)) = dep.split_once(':')
@@ -649,23 +719,16 @@ fn parse_list(line: &str) -> Vec<String> {
         return Vec::new();
     }
     val.split_whitespace()
-        .map(|s| {
-            let s = s.split(">=").next().unwrap_or(s);
-            let s = s.split("<=").next().unwrap_or(s);
-            let s = s.split('=').next().unwrap_or(s);
-            let s = s.split('>').next().unwrap_or(s);
-            let s = s.split('<').next().unwrap_or(s);
-            s.to_string()
-        })
-        .filter(|s| {
-            !s.is_empty()
-                && !s.starts_with('-')
-                && !s.starts_with('/')
-                && !s.starts_with('.')
-                && s.chars().all(|c| {
-                    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '+'
-                })
-        })
+        .filter_map(sanitize_dependency_name)
+        .collect()
+}
+
+fn parse_dpkg_dependencies(depends_str: &str) -> Vec<String> {
+    depends_str
+        .split(',')
+        .filter_map(|group| group.split('|').next())
+        .filter_map(|dep| dep.split_whitespace().next())
+        .filter_map(sanitize_dependency_name)
         .collect()
 }
 
@@ -673,17 +736,19 @@ fn parse_size(line: &str) -> f32 {
     let val = parse_value(line);
     let parts: Vec<&str> = val.split_whitespace().collect();
     if parts.len() == 2 {
-        let amount: f32 = parts[0].parse().unwrap_or(0.0);
-        if amount.is_nan() || amount.is_infinite() {
+        let amount = parse_nonnegative_f32(parts[0]);
+        if amount == 0.0 {
             return 0.0;
         }
-        match parts[1] {
+        let size_kb = match parts[1] {
             "MiB" => amount * 1024.0,
             "GiB" => amount * 1024.0 * 1024.0,
             "KiB" => amount,
             "B" => amount / 1024.0,
-            _ => amount,
-        }
+            _ => 0.0,
+        };
+
+        if size_kb.is_finite() { size_kb } else { 0.0 }
     } else {
         0.0
     }
@@ -701,6 +766,8 @@ mod tests {
         assert_eq!(parse_size(""), 0.0);
         assert_eq!(parse_size("Installed Size : DROP TABLE packages;"), 0.0);
         assert_eq!(parse_size("Installed Size : NaN MiB"), 0.0);
+        assert_eq!(parse_size("Installed Size : -42 MiB"), 0.0);
+        assert_eq!(parse_size("Installed Size : 42 MB"), 0.0);
     }
 
     #[test]
@@ -721,8 +788,8 @@ mod tests {
         assert_eq!(parse_flatpak_size(""), 0.0);
         assert_eq!(
             parse_flatpak_size("99999999999999999999999999999999999.9 GB"),
-            f32::INFINITY
-        ); // Это приемлемо для f32
+            0.0
+        );
     }
 
     #[test]
@@ -739,5 +806,61 @@ mod tests {
         );
         assert_eq!(normalize_dependency_name("rm", &package_names), None);
         assert_eq!(normalize_dependency_name("&&", &package_names), None);
+    }
+
+    #[test]
+    fn test_parse_dpkg_query_output_keeps_depends_after_alternative_separator() {
+        let output = concat!(
+            "demo|1.0|summary|128|libc6 (>= 2.34) | libc6.1, zlib1g:any, rm -rf /\n",
+            "libc6|2.39|runtime|256|\n",
+            "zlib1g|1.3|compression|64|\n",
+        );
+
+        let packages = parse_dpkg_query_output(output);
+        let demo = packages.get("demo").unwrap();
+
+        assert_eq!(demo.size_kb, 128.0);
+        assert_eq!(demo.depends_on, vec!["libc6", "zlib1g:any", "rm"]);
+    }
+
+    #[test]
+    fn test_finalize_package_graph_filters_deps_and_builds_reverse_deps() {
+        let mut packages = HashMap::from([
+            (
+                "app".to_string(),
+                PackageInfo {
+                    name: "app".to_string(),
+                    version: "1.0".to_string(),
+                    description: String::new(),
+                    size_kb: 1.0,
+                    depends_on: vec![
+                        "lib:any".to_string(),
+                        "lib".to_string(),
+                        "missing".to_string(),
+                        "rm".to_string(),
+                    ],
+                    required_by: vec!["stale".to_string()],
+                    source: PackageSource::Native,
+                },
+            ),
+            (
+                "lib".to_string(),
+                PackageInfo {
+                    name: "lib".to_string(),
+                    version: "1.0".to_string(),
+                    description: String::new(),
+                    size_kb: 1.0,
+                    depends_on: Vec::new(),
+                    required_by: Vec::new(),
+                    source: PackageSource::Native,
+                },
+            ),
+        ]);
+
+        finalize_package_graph(&mut packages);
+
+        assert_eq!(packages["app"].depends_on, vec!["lib"]);
+        assert_eq!(packages["lib"].required_by, vec!["app"]);
+        assert!(packages["app"].required_by.is_empty());
     }
 }

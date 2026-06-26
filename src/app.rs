@@ -6,8 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
+enum PackageLoadState {
+    Loading,
+    Ready(Graph),
+    Failed(String),
+}
+
 pub struct LinuxGraphApp {
-    graph: Arc<Mutex<Option<Graph>>>,
+    package_state: Arc<Mutex<PackageLoadState>>,
     pan: Vec2,
     zoom: f32,
     selected_node: Option<usize>,
@@ -20,18 +26,20 @@ impl LinuxGraphApp {
         cc.egui_ctx.set_visuals(egui::Visuals::dark()); // Темная тема по умолчанию
 
         let rt = Runtime::new().unwrap();
-        let graph = Arc::new(Mutex::new(None));
+        let package_state = Arc::new(Mutex::new(PackageLoadState::Loading));
 
-        let graph_clone = graph.clone();
+        let state_clone = package_state.clone();
         rt.spawn(async move {
-            if let Ok(packages) = get_all_packages().await {
-                let g = Graph::new(packages);
-                *graph_clone.lock().unwrap() = Some(g);
-            }
+            let next_state = match get_all_packages().await {
+                Ok(packages) => PackageLoadState::Ready(Graph::new(packages)),
+                Err(error) => PackageLoadState::Failed(error.to_string()),
+            };
+
+            *state_clone.lock().unwrap() = next_state;
         });
 
         Self {
-            graph,
+            package_state,
             pan: Vec2::ZERO,
             zoom: 1.0,
             selected_node: None,
@@ -44,12 +52,16 @@ impl LinuxGraphApp {
 impl eframe::App for LinuxGraphApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let loading = { self.graph.lock().unwrap().is_none() };
+        let loading = {
+            let state = self.package_state.lock().unwrap();
+            matches!(&*state, PackageLoadState::Loading)
+        };
         if loading {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
 
-        let mut graph_lock = self.graph.lock().unwrap();
+        let mut state_lock = self.package_state.lock().unwrap();
+        let search_query_lower = self.search_query.trim().to_lowercase();
 
         let mut frame = egui::Frame::side_top_panel(&ctx.global_style());
         frame.inner_margin = egui::Margin::same(15); // Красивые отступы
@@ -99,22 +111,24 @@ impl eframe::App for LinuxGraphApp {
                 ui.separator();
 
                 // Автодополнение (Programmable Completion)
-                if !self.search_query.is_empty()
-                    && let Some(graph) = graph_lock.as_ref()
+                if !search_query_lower.is_empty()
+                    && let PackageLoadState::Ready(graph) = &*state_lock
                 {
-                    let query_lower = self.search_query.to_lowercase();
-
                     let exact_match = graph
                         .nodes
                         .iter()
-                        .any(|n| n.info.name.to_lowercase() == query_lower);
+                        .any(|n| n.info.name.eq_ignore_ascii_case(&self.search_query));
 
                     if !exact_match {
                         let matches: Vec<_> = graph
                             .nodes
                             .iter()
-                            .filter(|n| n.info.name.to_lowercase().starts_with(&query_lower))
+                            .enumerate()
+                            .filter(|(_, n)| {
+                                n.info.name.to_lowercase().starts_with(&search_query_lower)
+                            })
                             .take(6)
+                            .map(|(idx, n)| (idx, n.info.name.clone()))
                             .collect();
 
                         if !matches.is_empty() {
@@ -123,15 +137,13 @@ impl eframe::App for LinuxGraphApp {
                                     egui::RichText::new("Suggestions:")
                                         .color(Color32::from_gray(150)),
                                 );
-                                for n in matches {
-                                    if ui.selectable_label(false, &n.info.name).clicked() {
-                                        self.search_query = n.info.name.clone();
+                                for (idx, name) in matches {
+                                    if ui.selectable_label(false, &name).clicked() {
+                                        self.search_query = name;
 
                                         // Автоматически фокусируемся на пакете при выборе
-                                        if let Some(&idx) = graph._name_to_index.get(&n.info.name) {
-                                            self.selected_node = Some(idx);
-                                            self.pan = -graph.nodes[idx].pos.to_vec2() * self.zoom;
-                                        }
+                                        self.selected_node = Some(idx);
+                                        self.pan = -graph.nodes[idx].pos.to_vec2() * self.zoom;
                                     }
                                 }
                             });
@@ -141,22 +153,22 @@ impl eframe::App for LinuxGraphApp {
 
                 ui.separator();
 
-                if let Some(graph) = graph_lock.as_ref() {
-                    ui.heading(
-                        egui::RichText::new("🌌 Linux Package Graph")
-                            .size(20.0)
-                            .strong()
-                            .color(egui::Color32::from_rgb(150, 200, 255)),
-                    );
-                    ui.add_space(5.0);
+                match &mut *state_lock {
+                    PackageLoadState::Ready(graph) => {
+                        ui.heading(
+                            egui::RichText::new("🌌 Linux Package Graph")
+                                .size(20.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(150, 200, 255)),
+                        );
+                        ui.add_space(5.0);
 
-                    // Считаем статистику
-                    let mut native_count = 0;
-                    let mut foreign_count = 0;
-                    let mut flatpak_count = 0;
-                    let mut total_size_kb = 0.0;
+                        // Считаем статистику
+                        let mut native_count = 0;
+                        let mut foreign_count = 0;
+                        let mut flatpak_count = 0;
+                        let mut total_size_kb = 0.0;
 
-                    if let Some(graph) = graph_lock.as_ref() {
                         for node in &graph.nodes {
                             total_size_kb += node.info.size_kb;
                             match node.info.source {
@@ -165,115 +177,124 @@ impl eframe::App for LinuxGraphApp {
                                 PackageSource::Flatpak => flatpak_count += 1,
                             }
                         }
-                    }
 
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Total packages: {}",
-                            native_count + foreign_count + flatpak_count
-                        ))
-                        .strong(),
-                    );
-                    ui.label(format!(
-                        "Total size: {:.2} GB",
-                        total_size_kb / 1024.0 / 1024.0
-                    ));
-
-                    ui.add_space(10.0);
-                    ui.separator();
-
-                    // Легенда
-                    ui.label(egui::RichText::new("Legend:").strong());
-                    ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new("⬤").color(egui::Color32::from_rgb(100, 150, 250)),
+                            egui::RichText::new(format!(
+                                "Total packages: {}",
+                                native_count + foreign_count + flatpak_count
+                            ))
+                            .strong(),
                         );
-                        ui.label(format!("System ({})", native_count));
-                    });
-                    if foreign_count > 0 {
+                        ui.label(format!(
+                            "Total size: {:.2} GB",
+                            total_size_kb / 1024.0 / 1024.0
+                        ));
+
+                        ui.add_space(10.0);
+                        ui.separator();
+
+                        // Легенда
+                        ui.label(egui::RichText::new("Legend:").strong());
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new("⬤")
-                                    .color(egui::Color32::from_rgb(250, 100, 100)),
+                                    .color(egui::Color32::from_rgb(100, 150, 250)),
                             );
-                            ui.label(format!("AUR/Foreign ({})", foreign_count));
+                            ui.label(format!("System ({})", native_count));
                         });
-                    }
-                    if flatpak_count > 0 {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⬤")
-                                    .color(egui::Color32::from_rgb(50, 200, 100)),
-                            );
-                            ui.label(format!("Flatpak ({})", flatpak_count));
-                        });
-                    }
-
-                    ui.add_space(10.0);
-                    ui.separator();
-
-                    if let Some(idx) = self.selected_node {
-                        let node = &graph.nodes[idx];
-                        ui.label(egui::RichText::new("Package Details").size(16.0).strong());
-                        ui.add_space(5.0);
-
-                        ui.label(
-                            egui::RichText::new(format!("Name: {}", node.info.name))
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        );
-                        ui.label(format!("Version: {}", node.info.version));
-                        ui.label(format!("Size: {:.2} MB", node.info.size_kb / 1024.0));
-                        ui.separator();
-                        ui.label("Description:");
-                        ui.label(&node.info.description);
-                        ui.separator();
-
-                        let mut jump_to = None;
-
-                        ui.label(format!("Depends On ({}):", node.info.depends_on.len()));
-                        egui::ScrollArea::vertical()
-                            .id_salt("deps")
-                            .max_height(150.0)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                for dep in &node.info.depends_on {
-                                    if ui.link(dep).clicked()
-                                        && let Some(&i) = graph._name_to_index.get(dep)
-                                    {
-                                        jump_to = Some(i);
-                                    }
-                                }
+                        if foreign_count > 0 {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("⬤")
+                                        .color(egui::Color32::from_rgb(250, 100, 100)),
+                                );
+                                ui.label(format!("AUR/Foreign ({})", foreign_count));
                             });
-                        ui.separator();
-                        ui.label(format!("Required By ({}):", node.info.required_by.len()));
-                        egui::ScrollArea::vertical()
-                            .id_salt("reqs")
-                            .max_height(150.0)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                for req in &node.info.required_by {
-                                    if ui.link(req).clicked()
-                                        && let Some(&i) = graph._name_to_index.get(req)
-                                    {
-                                        jump_to = Some(i);
-                                    }
-                                }
-                            });
-
-                        if let Some(j) = jump_to {
-                            self.selected_node = Some(j);
-                            // Плавно переносим камеру на выбранный узел
-                            self.pan = -graph.nodes[j].pos.to_vec2() * self.zoom;
                         }
-                    } else {
-                        ui.label("Select a package to view details.");
+                        if flatpak_count > 0 {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("⬤")
+                                        .color(egui::Color32::from_rgb(50, 200, 100)),
+                                );
+                                ui.label(format!("Flatpak ({})", flatpak_count));
+                            });
+                        }
+
+                        ui.add_space(10.0);
+                        ui.separator();
+
+                        if let Some(idx) = self.selected_node.filter(|&idx| idx < graph.nodes.len())
+                        {
+                            let node = &graph.nodes[idx];
+                            ui.label(egui::RichText::new("Package Details").size(16.0).strong());
+                            ui.add_space(5.0);
+
+                            ui.label(
+                                egui::RichText::new(format!("Name: {}", node.info.name))
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            );
+                            ui.label(format!("Version: {}", node.info.version));
+                            ui.label(format!("Size: {:.2} MB", node.info.size_kb / 1024.0));
+                            ui.separator();
+                            ui.label("Description:");
+                            ui.label(&node.info.description);
+                            ui.separator();
+
+                            let mut jump_to = None;
+
+                            ui.label(format!("Depends On ({}):", node.info.depends_on.len()));
+                            egui::ScrollArea::vertical()
+                                .id_salt("deps")
+                                .max_height(150.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    for dep in &node.info.depends_on {
+                                        if ui.link(dep).clicked()
+                                            && let Some(&i) = graph.name_to_index.get(dep)
+                                        {
+                                            jump_to = Some(i);
+                                        }
+                                    }
+                                });
+                            ui.separator();
+                            ui.label(format!("Required By ({}):", node.info.required_by.len()));
+                            egui::ScrollArea::vertical()
+                                .id_salt("reqs")
+                                .max_height(150.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    for req in &node.info.required_by {
+                                        if ui.link(req).clicked()
+                                            && let Some(&i) = graph.name_to_index.get(req)
+                                        {
+                                            jump_to = Some(i);
+                                        }
+                                    }
+                                });
+
+                            if let Some(j) = jump_to {
+                                self.selected_node = Some(j);
+                                // Плавно переносим камеру на выбранный узел
+                                self.pan = -graph.nodes[j].pos.to_vec2() * self.zoom;
+                            }
+                        } else {
+                            self.selected_node = None;
+                            ui.label("Select a package to view details.");
+                        }
                     }
-                } else {
-                    ui.spinner();
-                    ui.label("Loading packages...");
+                    PackageLoadState::Loading => {
+                        ui.spinner();
+                        ui.label("Loading packages...");
+                    }
+                    PackageLoadState::Failed(error) => {
+                        ui.label(egui::RichText::new("Failed to load packages").strong());
+                        ui.add_space(5.0);
+                        ui.label(error.as_str());
+                    }
                 }
             });
 
@@ -308,7 +329,7 @@ impl eframe::App for LinuxGraphApp {
 
             let center = rect.center() + self.pan;
 
-            if let Some(graph) = graph_lock.as_mut() {
+            if let PackageLoadState::Ready(graph) = &mut *state_lock {
                 // Физика отключена в реальном времени!
                 // graph.apply_forces(0.5);
 
@@ -381,17 +402,13 @@ impl eframe::App for LinuxGraphApp {
                     let is_selected = self.selected_node == Some(i);
                     let is_hovered = hovered_node == Some(i);
 
-                    let search_match = !self.search_query.is_empty()
-                        && (node
-                            .info
-                            .name
-                            .to_lowercase()
-                            .contains(&self.search_query.to_lowercase())
+                    let search_match = !search_query_lower.is_empty()
+                        && (node.info.name.to_lowercase().contains(&search_query_lower)
                             || node
                                 .info
                                 .description
                                 .to_lowercase()
-                                .contains(&self.search_query.to_lowercase()));
+                                .contains(&search_query_lower));
 
                     let (fill_color, stroke) = if is_selected {
                         (
@@ -463,6 +480,14 @@ impl eframe::App for LinuxGraphApp {
                         self.selected_node = None;
                     }
                 }
+            } else if let PackageLoadState::Failed(error) = &*state_lock {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("Failed to load packages:\n{error}"),
+                    egui::FontId::proportional(16.0),
+                    Color32::from_rgb(250, 120, 120),
+                );
             }
         });
     }
